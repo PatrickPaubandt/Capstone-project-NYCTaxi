@@ -1,8 +1,0 @@
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-pip install -U pip
-pip install pandas sqlalchemy psycopg2-binary python-dotenv requests pyarrow
-pip freeze > requirements.txt
-
-##Warum? Dein Projekt läuft dann auf jedem Rechner gleich (auch bei Prüfung / Showcase).

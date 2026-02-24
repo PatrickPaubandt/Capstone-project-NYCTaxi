@@ -109,3 +109,119 @@
     * ensured vw_tableau_tip_bid still joins BID enrichment correctly after the rebuild
 
     * updated documentation
+
+
+### 11.02.2026 Wednesday
+
+* Continued hypothesis preparation in Tableau and standardized an outlier-handling approach for tip-rate KPIs:
+
+    * investigated unusually high Unknown/Other payment shares in certain pickup zones and validated the root cause in SQL:
+
+        * confirmed that payment_type = 0 dominates in specific outer-borough zones (≈95–99%), meaning those records are Flex Fare trips (not missing/unknown payments)
+        * decided to focus the tipping analysis on Card-only trips (payment_type = 1) to ensure tip recording is comparable and reliable
+
+* implemented and validated an outlier strategy that avoids trip-level boxplots (performance constraints):
+
+    * computed percentiles for tip_rate_fare on Card-only trips in PostgreSQL (p95 ≈ 0.4167, p99 ≈ 0.5389, max = 20000, n = 2,520,939)
+
+    * created a Tableau parameter for the cap threshold (P99) and built a winsorized metric (tip_rate_fare_capped) to reduce extreme-value distortion without deleting trips
+
+    * ran sanity checks in Tableau:
+        * compared overall averages pre/post cap (avg raw ~26.7% vs capped ~25.1%)
+        * checked borough-level differences and observed stronger distortion in small/special segments (e.g., EWR / Staten Island), reinforcing the need for caps and optional minimum-sample thresholds
+
+* prepared the hypothesis testing workflow:
+
+    * agreed to use capped tip-rate metrics as default in hypothesis charts
+
+    * noted that additional guardrails (e.g., excluding NULL/Unknown boroughs or enforcing minimum trip counts per zone) may be applied to avoid misleading small-sample effects
+
+
+### 12.02.2026 Thursday
+
+Hypothesis Airport: 
+We tested the Airport vs. Non-Airport tipping hypothesis in several steps. First, we compared overall average tip rates (card-only) and initially saw no clear advantage for airport trips. We then discovered that airport rides have a much higher average fare, meaning the raw averages mix different trip populations and can mask effects.
+
+To control for this, we created price-level bins and compared airport vs. non-airport within the same bin: fare_amount bins for tip_rate_fare (capped) and pretip_total bins for tip_rate_pretip (capped) (switching from total_amount to pretip_total because it matches the metric definition). We also applied a minimum trip-count filter per bin using CNT(Pickup Date) to reduce small-sample noise. After binning and filtering, we observed that airport trips tend to have slightly higher tip rates in most comparable bins, especially in the low-to-mid price ranges, and the capped vs. uncapped lines were generally similar—suggesting the pattern is not driven by extreme outliers.
+
+Airport hypothesis — what we did (English summary)
+
+Initial check (overall averages, card-only):
+
+We started by comparing overall average tip rates for airport vs non-airport trips.
+
+At first glance, this suggested that airport trips do not meaningfully outperform non-airport trips on tip rate (the difference looked small / not clearly higher).
+
+Why that result was misleading (fare structure / compositional effect):
+
+We then checked the average fare level by segment and found that airport trips have a much higher average fare amount.
+
+Because tip rate behavior changes with fare size (tip rates typically decline as fares increase), comparing raw averages mixes two structurally different populations and can hide real effects.
+
+Controlled comparison using bins (fair comparison):
+
+To control for this, we created fare-level bins and compared airport vs non-airport within the same fare context:
+
+Fare Amount (bin) for Tip Rate Fare (Capped) (and uncapped as a sanity check)
+
+Later, we improved the pretip analysis by using Pretip Total (bin) (instead of Total Amount) for Tip Rate Pretip (Capped), because tip_rate_pretip is defined relative to pre-tip cost.
+
+We also applied a minimum trip-count threshold per bin using CNT(Pickup Date) to reduce noise and prevent small-sample spikes.
+
+Key finding after controlling for fare level:
+
+Once binned (and especially after applying a minimum count per bin), we observed that airport trips show higher tip rates in most comparable bins, particularly in the low-to-mid fare/pretip ranges.
+
+The “capped” vs “uncapped” lines were very close most of the time, indicating that the pattern is not driven by extreme outliers, but reflects the typical behavior.
+
+Bottom line:
+
+The airport effect is not obvious in raw averages due to airport trips having much higher fares.
+
+After controlling for fare/pretip levels via bins, the airport segment tends to tip slightly higher in comparable contexts.
+
+### 12.02.2026 Friday
+
+We extended the NYC Yellow Taxi pipeline from a single-month load (Sep 2025) to a multi-month load (Jul–Sep 2025) and redesigned the import to match the analysis scope. During ingestion, we enforced card-only trips (payment_type = 1), dropped unneeded columns (passenger_count, store_and_fwd_flag), and added data-quality filters (positive distance/fare/total-pretip, dropoff after pickup, non-negative tips). We then validated each month with row counts, date coverage, NULL checks, and payment sanity; discovered a few timestamp outliers (e.g., 2009 dates and pickups outside the target month), and removed them via SQL cleanup by keeping only pickups within each file’s month. Finally, we updated vw_yellow_clean_tip by removing the hardcoded month boundary, adding a max trip duration cap (≤ 6 hours), and applying agreed surcharge sanity filters (improvement_surcharge = 1.00 and mta_tax IN (0.00, 0.50)), so the clean view now supports consistent analysis across all imported months.
+
+### 14.02.2026 Monday
+
+On Monday (2026-02-16) the work focused on the Stress/Frustration hypothesis (H2) and on clarifying why tipping patterns are often dominated by trip size.
+
+Stress/Frustration (H2)
+
+* Defined a stress proxy using minutes per mile: duration_per_mile = Duration Min / Trip Distance
+* Corrected the earlier “wrong direction” formula (distance/duration is speed, not duration-per-mile).
+* Checked plausibility and applied practical analysis guards (e.g., only distance > 0, duration > 0, and trimming extreme tails such as duration_per_mile <= 30).
+* Built Tableau views to test stress effects on:
+    * Tip rate (%) (using capped tip-rate fields for robustness)
+    * Tipping probability (is_tipped)
+* Main takeaway: stress showed a clearer negative relationship with is_tipped than with tip%, which appeared comparatively flat once trip size was controlled.
+
+Tipping mechanics follow-up (why trip size drives tip%)
+
+* Built visuals to explain the “trip size dominates tip%” effect:
+    * Tip Amount vs Pretip Total (avg + median)
+    * Implied fixed-tip overlays ($2 / $3 / $5 expressed as % of pretip total)
+    * Heatmap controlling for trip size × stress
+* Found strong evidence that for small fares, tipping behavior is often discrete/default-driven (not purely proportional), with a pronounced $2 “default/minimum” pattern in the low-pretip range.
+
+Set up the next step
+
+* Decided the next hypothesis should test BID context (Business Improvement District exposure):
+    * Start with Pickup BID (pu_* fields), then Dropoff BID (do_* fields if available).
+    * Always control for trip size using Pretip Total Bucket (Stakeholder) or Pretip Total (bin).
+
+Useful column names referenced
+
+* Outcomes: tip_amount, is_tipped, tip_rate_pretip, tip_rate_pretip_capped
+* Trip size: pretip_total, Pretip Total (bin), Pretip Total Bucket (Stakeholder)
+* Stress: duration_min, trip_distance, duration_per_mile, duration_per_mile (bin)
+* BID: pu_has_bid, pu_bid_count, pu_bid_overlap_share, pu_bid_overlap_share_pct (plus analogous do_* if present)
+* Main Tableau view: vw_tableau_tip_bid
+
+### 15.02.2025 Tuesday
+
+* build a first story after analysing and testing the hypothesis
+* presented the story to my teacher
+* gettign feedback

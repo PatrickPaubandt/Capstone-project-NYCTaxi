@@ -1,4 +1,4 @@
-## DB-Verbindung als „Smoke Test“ (funktioniert alles?)
+
 from dataclasses import dataclass
 import os
 from dotenv import load_dotenv
